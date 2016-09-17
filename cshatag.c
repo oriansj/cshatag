@@ -38,8 +38,8 @@
  */
 typedef struct
 {
-	unsigned long long s;
-	unsigned long ns;
+	unsigned long long seconds;
+	unsigned long nanoseconds;
 	char sha256[HASHLEN*2+1];
 	bool unset;
 } xa_t;
@@ -105,8 +105,8 @@ xa_t getmtime(FILE *f)
 		fprintf(stderr,"Error: this is not a regular file\n");
 		exit(3);
 	}
-	actual.s=buf.st_mtim.tv_sec;
-	actual.ns=buf.st_mtim.tv_nsec;
+	actual.seconds=buf.st_mtim.tv_sec;
+	actual.nanoseconds=buf.st_mtim.tv_nsec;
 
 	return actual;
 }
@@ -138,24 +138,24 @@ xa_t getactualxa(FILE *f)
 xa_t getstoredxa(FILE *f)
 {
 	int fd=fileno(f);
-	bool set;
+	bool unset;
 	xa_t xa = {0,0,{0}, true};
 	/*
 	 * Attempt to get the sha256sum stored by this tool
 	 */
-	set = fgetxattr(fd, "user.shatag.sha256", xa.sha256, sizeof(xa.sha256));
+	unset = (fgetxattr(fd, "user.shatag.sha256", xa.sha256, sizeof(xa.sha256)) <= 0);
 
 	/*
 	 * Get the time stamp in terms of seconds and nanoseconds
 	 */
 	char ts[30] = {0};
-	set &= fgetxattr(fd, "user.shatag.ts", ts, sizeof(ts));
-	sscanf(ts,"%10llu.%9lu",&xa.s,&xa.ns);
+	unset &= (fgetxattr(fd, "user.shatag.ts", ts, sizeof(ts)) <= 0);
+	sscanf(ts,"%10llu.%9lu",&xa.seconds,&xa.nanoseconds);
 
 	/*
 	 * Flag if both fields are not set
 	 */
-	xa.unset = set;
+	xa.unset = unset;
 
 	return xa;
 }
@@ -170,7 +170,7 @@ bool writexa(FILE *f, xa_t xa)
 	bool err;
 
 	char buf [100];
-	snprintf(buf,sizeof(buf),"%llu.%09lu",xa.s,xa.ns);
+	snprintf(buf,sizeof(buf),"%llu.%09lu",xa.seconds,xa.nanoseconds);
 	err = fsetxattr(fd, "user.shatag.ts", buf, strlen(buf), flags);
 	err |= fsetxattr(fd, "user.shatag.sha256", &xa.sha256, sizeof(xa.sha256), flags);
 
@@ -197,25 +197,25 @@ char * formatxa(xa_t s)
 		prettysha=s.sha256;
 	else
 		prettysha="0000000000000000000000000000000000000000000000000000000000000000";
-	snprintf(buf,buflen,"%s %010llu.%09lu", prettysha, s.s, s.ns);
+	snprintf(buf,buflen,"%s %010llu.%09lu", prettysha, s.seconds, s.nanoseconds);
 	return buf;
 }
 
 void checkFile(FILE* f, const char* fn, bool update)
 {
-	xa_t s;
-	s=getstoredxa(f);
-	xa_t a;
-	a=getactualxa(f);
+	xa_t stored;
+	stored=getstoredxa(f);
+	xa_t actual;
+	actual=getactualxa(f);
 	bool needsupdate = false;
 	bool havecorrupt = false;
 
-	if(s.s==a.s && s.ns==a.ns)
+	if(stored.seconds==actual.seconds && stored.nanoseconds==actual.nanoseconds)
 	{
 		/*
 		 * Times are the same, go ahead and compare the hash
 		 */
-		if(strcmp(s.sha256,a.sha256)!=0)
+		if(strcmp(stored.sha256,actual.sha256)!=0)
 		{
 			/*
 			 * Hashes are different, but this may be because
@@ -224,7 +224,7 @@ void checkFile(FILE* f, const char* fn, bool update)
 			 */
 			xa_t a2;
 			a2=getmtime(f);
-			if(s.s==a2.s && s.ns==a2.ns)
+			if(stored.seconds==a2.seconds && stored.nanoseconds==a2.nanoseconds)
 			{
 				/*
 				 * Now, this is either data corruption or somebody modified the file
@@ -232,22 +232,29 @@ void checkFile(FILE* f, const char* fn, bool update)
 				 */
 				fprintf(stderr,"Error: corrupt file \"%s\"\n",fn);
 				printf("<corrupt> %s\n",fn);
-				printf(" stored: %s\n actual: %s\n",formatxa(s),formatxa(a));
+				printf(" stored: %s\n actual: %s\n",formatxa(stored),formatxa(actual));
 				needsupdate = true;
 				havecorrupt = true;
 			}
 		}
 		else
+		{
 			printf("<ok> %s\n",fn);
+		}
+	}
+	else if (stored.unset)
+	{
+		fprintf(stdout, "<unset> %s\n actual: %s\n", fn,formatxa(actual));
+		needsupdate = true;
 	}
 	else
 	{
 		printf("<outdated> %s\n",fn);
-		printf(" stored: %s\n actual: %s\n",formatxa(s),formatxa(a));
+		printf(" stored: %s\n actual: %s\n",formatxa(stored),formatxa(actual));
 		needsupdate = true;
 	}
 
-	if(update && needsupdate && writexa(f,a))
+	if(update && needsupdate && writexa(f,actual))
 	{
 		fprintf(stderr,"Error: could not write extended attributes to file \"%s\": %s\n",fn,strerror(errno));
 		exit(4);
