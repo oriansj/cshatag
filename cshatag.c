@@ -135,32 +135,18 @@ xa_t getactualxa(FILE *f)
 xa_t getstoredxa(FILE *f)
 {
 	int fd=fileno(f);
-	xa_t xa;
-	xa.s=0;
-	xa.ns=0;
-
+	xa_t xa = {0,0,{0}};
 	/*
-	 * Initialize to zero-length string - if fgetxattr fails this is what we get
+	 * Attempt to get the sha256sum stored by this tool
 	 */
-	xa.sha256[0]=0;
 	fgetxattr(fd, "user.shatag.sha256", xa.sha256, sizeof(xa.sha256));
-	xa.sha256[HASHLEN*2]=0;
 
 	/*
-	 * Example:
-	 * 1335974989.123456789
-	 *    10     .     9     => len=20
+	 * Get the time stamp in terms of seconds and nanoseconds
 	 */
-	char ts[100];
-	/*
-	 * Initialize to zero-length string - if fgetxattr fails this is what we get
-	 */
-	ts[0]=0;
+	char ts[30] = {0};
 	fgetxattr(fd, "user.shatag.ts", ts, sizeof(ts));
-	/*
-	 * If sscanf fails (because ts is zero-length) variables stay zero
-	 */
-	sscanf(ts,"%llu.%lu",&xa.s,&xa.ns);
+	sscanf(ts,"%10llu.%9lu",&xa.s,&xa.ns);
 
 	return xa;
 }
