@@ -20,6 +20,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <getopt.h>
 #include <sys/xattr.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -39,6 +41,7 @@ typedef struct
 	unsigned long long s;
 	unsigned long ns;
 	char sha256[HASHLEN*2+1];
+	bool unset;
 } xa_t;
 
 /**
@@ -135,18 +138,24 @@ xa_t getactualxa(FILE *f)
 xa_t getstoredxa(FILE *f)
 {
 	int fd=fileno(f);
-	xa_t xa = {0,0,{0}};
+	bool set;
+	xa_t xa = {0,0,{0}, true};
 	/*
 	 * Attempt to get the sha256sum stored by this tool
 	 */
-	fgetxattr(fd, "user.shatag.sha256", xa.sha256, sizeof(xa.sha256));
+	set = fgetxattr(fd, "user.shatag.sha256", xa.sha256, sizeof(xa.sha256));
 
 	/*
 	 * Get the time stamp in terms of seconds and nanoseconds
 	 */
 	char ts[30] = {0};
-	fgetxattr(fd, "user.shatag.ts", ts, sizeof(ts));
+	set &= fgetxattr(fd, "user.shatag.ts", ts, sizeof(ts));
 	sscanf(ts,"%10llu.%9lu",&xa.s,&xa.ns);
+
+	/*
+	 * Flag if both fields are not set
+	 */
+	xa.unset = set;
 
 	return xa;
 }
@@ -154,15 +163,16 @@ xa_t getstoredxa(FILE *f)
 /**
  * Write out metadata to file's extended attributes
  */
-int writexa(FILE *f, xa_t xa)
+bool writexa(FILE *f, xa_t xa)
 {
 	int fd=fileno(f);
-	int flags=0,err=0;
+	int flags=0;
+	bool err;
 
 	char buf [100];
 	snprintf(buf,sizeof(buf),"%llu.%09lu",xa.s,xa.ns);
-	err=fsetxattr(fd, "user.shatag.ts", buf, strlen(buf), flags);
-	err|=fsetxattr(fd, "user.shatag.sha256", &xa.sha256, sizeof(xa.sha256), flags);
+	err = fsetxattr(fd, "user.shatag.ts", buf, strlen(buf), flags);
+	err |= fsetxattr(fd, "user.shatag.sha256", &xa.sha256, sizeof(xa.sha256), flags);
 
 	return err;
 }
@@ -183,7 +193,7 @@ char * formatxa(xa_t s)
 		exit(EXIT_FAILURE);
 	}
 
-	if(strlen(s.sha256)>0)
+	if(!s.unset)
 		prettysha=s.sha256;
 	else
 		prettysha="0000000000000000000000000000000000000000000000000000000000000000";
@@ -191,34 +201,14 @@ char * formatxa(xa_t s)
 	return buf;
 }
 
-int main( int argc, const char* argv[] )
+void checkFile(FILE* f, const char* fn, bool update)
 {
-	char const * myname;
-	myname=argv[0];
-
-	if(argc != 2)
-	{
-		fprintf(stderr,"Usage: %s FILE\n",myname);
-		exit(1);
-	}
-
-	char const * fn;
-	fn=argv[1];
-
-	FILE *f;
-	f=fopen(fn,"r");
-	if(!f)
-	{
-		fprintf(stderr,"Error: could not open file \"%s\": %s\n",fn,strerror(errno));
-		exit(2);
-	}
-
 	xa_t s;
 	s=getstoredxa(f);
 	xa_t a;
 	a=getactualxa(f);
-	int needsupdate=0;
-	int havecorrupt=0;
+	bool needsupdate = false;
+	bool havecorrupt = false;
 
 	if(s.s==a.s && s.ns==a.ns)
 	{
@@ -243,8 +233,8 @@ int main( int argc, const char* argv[] )
 				fprintf(stderr,"Error: corrupt file \"%s\"\n",fn);
 				printf("<corrupt> %s\n",fn);
 				printf(" stored: %s\n actual: %s\n",formatxa(s),formatxa(a));
-				needsupdate=1;
-				havecorrupt=1;
+				needsupdate = true;
+				havecorrupt = true;
 			}
 		}
 		else
@@ -254,17 +244,74 @@ int main( int argc, const char* argv[] )
 	{
 		printf("<outdated> %s\n",fn);
 		printf(" stored: %s\n actual: %s\n",formatxa(s),formatxa(a));
-		needsupdate=1;
+		needsupdate = true;
 	}
 
-	if(needsupdate && writexa(f,a)!=0)
+	if(update && needsupdate && writexa(f,a))
 	{
 		fprintf(stderr,"Error: could not write extended attributes to file \"%s\": %s\n",fn,strerror(errno));
 		exit(4);
 	}
 
 	if(havecorrupt)
-		return 5;
-	else
-		return 0;
+		exit(5);
+}
+
+int main( int argc, char **argv )
+{
+	int c;
+	bool update = false;
+	const char* filename = NULL;
+
+	static struct option long_options[] = {
+		{"update", no_argument, 0, 'u'},
+		{"file", required_argument, 0, 'f'},
+		{"help", no_argument, 0, 'h'},
+		{0, 0, 0, 0}
+	};
+	int option_index = 0;
+	while ((c = getopt_long(argc, argv, "f:h:u", long_options, &option_index)) != -1)
+	{
+		switch (c)
+		{
+			case 0: break;
+			case 'f':
+			{
+				filename = optarg;
+				break;
+			}
+			case 'h':
+			{
+				fprintf(stdout, "Usage: %s --file $filename [--update]\n", argv[0]);
+				exit(EXIT_SUCCESS);
+			}
+			case 'u':
+			{
+				update = true;
+				break;
+			}
+			default:
+			{
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+
+	if(NULL == filename)
+	{
+		fprintf(stdout, "Failed to provide a filename\n");
+		exit(EXIT_FAILURE);
+	}
+
+	FILE *f = fopen(filename,"r");
+	if(!f)
+	{
+		fprintf(stderr,"Error: could not open file \"%s\": %s\n",filename,strerror(errno));
+		exit(2);
+	}
+
+	checkFile(f, filename, update);
+
+	exit(EXIT_SUCCESS);
+
 }
