@@ -7,7 +7,7 @@ NAME
 
 
 SYNOPSIS
-       cshatag FILE
+       cshatag -f FILE [-u]
 
 
 DESCRIPTION
@@ -24,6 +24,7 @@ DESCRIPTION
        stdout and the stored checksum is updated.
 
        File statuses that appear on stdout are:
+            unset       sha tag has not been set
             outdated    mtime has changed
             ok          mtime has not changed, checksum is correct
             corrupt     mtime has not changed, checksum is wrong
@@ -34,9 +35,12 @@ DESCRIPTION
 
 EXAMPLES
        Typically, cshatag will be called from find:
-       # find / -xdev -type f -exec cshatag {} \; > cshatag.log
-       Errors  like  corrupt  files will then be printed to stderr or grep for
-       "corrupt" in cshatag.log.
+       # find / -xdev -type f -exec cshatag -f "{}" \; > cshatag.log
+       Grep for "corrupt" in cshatag.log to find which files are corrupt.
+
+       To update the tags of the outdated files:
+       # grep "<outdated>" cshatag.log | cut -d' ' -f2 | xargs -L1 -iname --
+       cshatag -uf "name" > updated.log
 
        To remove the extended attributes from all files:
        # find / -xdev -type f -exec setfattr -x  user.shatag.ts  {}  \;  -exec
